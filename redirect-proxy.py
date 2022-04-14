@@ -3,7 +3,17 @@ from xmlrpc.client import ProtocolError
 from quarry.net.protocol import Protocol, protocol_modes_inv
 from quarry.net.server import ServerProtocol, ServerFactory
 from quarry.net.client import ClientFactory
-from twisted.internet import reactor, task, defer
+from twisted.internet import reactor
+
+from enum import Enum
+
+
+class ProxyMode(Enum):
+    pass_through = 'pass-through'
+    hidden = 'hidden'
+
+    def __str__(self):
+        return self.value
 
 
 class LowLevelUpstreamProtocol(Protocol):
@@ -30,10 +40,22 @@ class LowLevelUpstreamProtocol(Protocol):
 
         self.protocol_mode = self.factory.protocol_mode_next
 
-        self.send_packet(
-            "login_start", self.factory.mother_server.login_start_buff)
-
         self.logger.debug("Connection made")
+
+
+class MotdSyncProtocol(LowLevelUpstreamProtocol):
+    def connection_made(self):
+        super().connection_made()
+
+        self.send_packet("status_request", b'')
+
+    def packet_status_response(self, buff):
+        self.factory.mother_server.send_packet('status_response', buff.read())
+
+
+class MotdSyncFactory(ClientFactory):
+    protocol = MotdSyncProtocol
+    protocol_mode_next = "status"
 
 
 class PassThroughUpstreamProtocol(LowLevelUpstreamProtocol):
@@ -41,6 +63,9 @@ class PassThroughUpstreamProtocol(LowLevelUpstreamProtocol):
         self.factory.mother_server.pass_through_stream = self
 
         super().connection_made()
+
+        self.send_packet(
+            "login_start", self.factory.mother_server.login_start_buff)
 
     def data_received(self, data):
         self.factory.mother_server.transport.write(data)
@@ -52,13 +77,16 @@ class PassThroughFactory(ClientFactory):
     protocol = PassThroughUpstreamProtocol
 
 
-class SideUpstreamProtocol(LowLevelUpstreamProtocol):
+class HiddenUpstreamProtocol(LowLevelUpstreamProtocol):
     request_sent = False
 
     def connection_made(self):
-        self.factory.mother_server.side_client_stream = self
+        self.factory.mother_server.hidden_connect_stream = self
 
         super().connection_made()
+
+        self.send_packet(
+            "login_start", self.factory.mother_server.login_start_buff)
 
     def packet_login_encryption_request(self, buff):
         self.factory.mother_server.send_packet(
@@ -73,19 +101,20 @@ class SideUpstreamProtocol(LowLevelUpstreamProtocol):
         # ignore
 
 
-class SideFactory(ClientFactory):
-    protocol = SideUpstreamProtocol
+class HiddenFactory(ClientFactory):
+    protocol = HiddenUpstreamProtocol
 
 
 class MyDownstream(ServerProtocol):
     pass_through_stream = None
-    side_client_stream = None
+    hidden_connect_stream = None
     login_start_buff = None
 
-    def side_upstream_connect(self):
-        side = SideFactory()
-        side.mother_server = self
-        side.connect(self.factory.side_client_host, self.factory.side_client_port)
+    def hidden_upstream_connect(self):
+        hidden = HiddenFactory()
+        hidden.mother_server = self
+        hidden.connect(self.factory.hidden_connect_host,
+                       self.factory.hidden_connect_port)
 
     def pass_through_connect(self):
         pro = PassThroughFactory()
@@ -96,21 +125,25 @@ class MyDownstream(ServerProtocol):
         if self.login_expecting != 0:
             raise ProtocolError("Out-of-order login")
 
-        # side client mode
-        # self.side_upstream_connect()
-
-        # pass through mode
-        self.pass_through_connect()
+        if self.factory.mode == ProxyMode.hidden:
+            self.hidden_upstream_connect()
+        else:
+            self.pass_through_connect()
 
         self.login_start_buff = buff.read()
 
     def packet_login_encryption_response(self, buff):
-        # must be from side client
-        self.side_client_stream.send_packet(
+        # must be from hidden client
+        self.hidden_connect_stream.send_packet(
             "login_encryption_response", buff.read())
 
-        # research needed
-        # task.deferLater(reactor, 3, self.pass_through_connect)
+    def packet_status_request(self, buff):
+        if self.factory.sync:
+            ms = MotdSyncFactory()
+            ms.mother_server = self
+            ms.connect(self.factory.connect_host, self.factory.connect_port)
+        else:
+            super().packet_status_request(buff)
 
     def connection_lost(self, reason):
         if self.pass_through_stream is not None:
@@ -132,8 +165,10 @@ class MyDownstreamFactory(ServerFactory):
     protocol = MyDownstream
     connect_host = None
     connect_port = None
-    side_client_host = None
-    side_client_port = None
+    hidden_connect_host = None
+    hidden_connect_port = None
+    mode = ProxyMode.pass_through
+    sync = True
     motd = "A Minecraft Server"
 
 
@@ -149,18 +184,26 @@ def main(argv):
                         default="mh-prd.minehut.com", help="address to connect to")
     parser.add_argument("-q", "--pass-through-port", default=25565,
                         type=int, help="port to connect to")
-    parser.add_argument("-c", "--side-client-host",
+    parser.add_argument("-c", "--hidden-connect-host",
                         default="127.0.0.1", help="another address to connect to")
-    parser.add_argument("-r", "--side-client-port", default=25565,
+    parser.add_argument("-r", "--hidden-connect-port", default=25565,
                         type=int, help="another port to connect to")
+    parser.add_argument("-m", "--mode", default=ProxyMode.pass_through,
+                        type=ProxyMode, choices=list(ProxyMode), help="proxy mode")
+    parser.add_argument(
+        '--sync', help="sync motd with pass through host (default)", action='store_true')
+    parser.add_argument('--no-sync', action='store_false')
+    parser.set_defaults(sync=True)
     args = parser.parse_args(argv)
 
     # Create factory
     factory = MyDownstreamFactory()
     factory.connect_host = args.pass_through_host
     factory.connect_port = args.pass_through_port
-    factory.side_client_host = args.side_client_host
-    factory.side_client_port = args.side_client_port
+    factory.hidden_connect_host = args.hidden_connect_host
+    factory.hidden_connect_port = args.hidden_connect_port
+    factory.mode = args.mode
+    factory.sync = args.no_sync
 
     # Listen
     factory.listen(args.listen_host1, args.listen_port1)
