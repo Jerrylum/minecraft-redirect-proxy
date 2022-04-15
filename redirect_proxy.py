@@ -1,3 +1,4 @@
+import ipaddress
 import typing
 from xmlrpc.client import ProtocolError
 
@@ -11,27 +12,43 @@ from enum import Enum
 
 
 def connect_addr_to_upstream_addr(connect_addr: str, server_domain: str) -> typing.Tuple[str, int]:
-
     if not connect_addr.endswith("." + server_domain):
-        raise ValueError(
-            "connect_addr must end with .{}".format(server_domain))
+        raise ValueError("connect_addr must end with .{}".format(server_domain))
 
     temp = connect_addr[:-len(server_domain) - 1]
-    ext_idx = temp.rfind(".")
-
-    if ext_idx < 1:
+    if temp.rfind(".") < 1:
         raise ValueError("connect_addr must be in the form of <host>.[port].<server_domain>")
-
-    # TODO handle raw IP input
-    # handle localhost
 
     lookup_host = temp
     lookup_port = 25565
-    ext = temp[ext_idx + 1:]
 
-    if ext.isdigit():
-        lookup_host = temp[:ext_idx]
-        lookup_port = int(ext)
+    if "localhost" in lookup_host:
+        raise ValueError("connect_addr must not be localhost")
+
+    splitted = lookup_host.split(".")
+    is_all_digit = all(x.isdigit() for x in splitted)
+    if is_all_digit:
+        if not (4 <= len(splitted) <= 5):
+            raise ValueError("ip address is invalid")
+
+        lookup_host = '.'.join(splitted[:4])
+
+        try:
+            ipv4 = ipaddress.IPv4Address(lookup_host)
+        except ValueError:
+            raise ValueError("ip address is invalid")
+
+        if ipv4.is_private:
+            raise ValueError("host must be a public IP address")
+
+        if len(splitted) == 5:
+            lookup_port = int(splitted[4])
+    else:
+        ext = splitted[-1]
+
+        if ext.isdigit():
+            lookup_host = '.'.join(splitted[:-1])
+            lookup_port = int(ext)
 
     if 0 < lookup_port > 65535:
         raise ValueError("port must be between 0 and 65535")
@@ -60,6 +77,10 @@ class LowLevelUpstreamProtocol(Protocol):
 
     def connection_made(self):
         """Called when the connection is established"""
+
+        if ipaddress.IPv4Address(self.remote_addr.host).is_private and not self.factory.allow_local_connection:
+            self.close()
+            return
 
         self.protocol_version = self.factory.mother_server.protocol_version
 
@@ -173,6 +194,7 @@ class MyDownstream(ServerProtocol):
     def motd_upstream_connect(self, _=None):
         motd = MotdSyncFactory()
         motd.mother_server = self
+        motd.allow_local_connection = not self.factory.args.mode == ProxyMode.pass_through_by_domain
         motd.connect(self.upstream_host,
                      self.upstream_port)
 
@@ -185,6 +207,7 @@ class MyDownstream(ServerProtocol):
     def pass_through_connect(self, _=None):
         pro = PassThroughFactory()
         pro.mother_server = self
+        pro.allow_local_connection = not self.factory.args.mode == ProxyMode.pass_through_by_domain
         pro.connect(self.upstream_host, self.upstream_port)
 
     def packet_handshake(self, buff):
@@ -209,10 +232,14 @@ class MyDownstream(ServerProtocol):
                     return
 
             if self.upstream_port == 25565:
-                self.upstream_dns_deffered = client \
-                    .lookupService('_minecraft._tcp.' + self.upstream_host, [10]) \
-                    .addCallback(self.dns_result_set_connect_host) \
-                    .addErrback(self.dns_result_set_connect_host)
+                try:
+                    self.upstream_dns_deffered = client \
+                        .lookupService('_minecraft._tcp.' + self.upstream_host, [10]) \
+                        .addCallback(self.dns_result_set_connect_host) \
+                        .addErrback(self.dns_result_set_connect_host)
+                except:
+                    self.close()
+                    return
 
     def packet_login_start(self, buff):
         if self.login_expecting != 0:
