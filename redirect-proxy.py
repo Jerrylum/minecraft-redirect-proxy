@@ -67,6 +67,11 @@ class PassThroughUpstreamProtocol(LowLevelUpstreamProtocol):
         self.send_packet(
             "login_start", self.factory.mother_server.login_start_buff)
 
+    def connection_lost(self, reason):
+        self.factory.mother_server.close()
+
+        super().connection_lost(reason)
+
     def data_received(self, data):
         self.factory.mother_server.transport.write(data)
 
