@@ -48,9 +48,15 @@ class ProxyMode(Enum):
         return self.value
 
 
+class LowLevelUpstreamFactory(ClientFactory):
+    protocol = None
+    allow_local_connection = True
+
+
 class LowLevelUpstreamProtocol(Protocol):
     recv_direction = "downstream"
     send_direction = "upstream"
+    factory: LowLevelUpstreamFactory = None
 
     def connection_made(self):
         """Called when the connection is established"""
@@ -85,7 +91,7 @@ class MotdSyncProtocol(LowLevelUpstreamProtocol):
         self.factory.mother_server.send_packet('status_response', buff.read())
 
 
-class MotdSyncFactory(ClientFactory):
+class MotdSyncFactory(LowLevelUpstreamFactory):
     protocol = MotdSyncProtocol
     protocol_mode_next = "status"
 
@@ -110,7 +116,7 @@ class PassThroughUpstreamProtocol(LowLevelUpstreamProtocol):
         self.connection_timer.restart()
 
 
-class PassThroughFactory(ClientFactory):
+class PassThroughFactory(LowLevelUpstreamFactory):
     protocol = PassThroughUpstreamProtocol
 
 
@@ -138,7 +144,7 @@ class HiddenUpstreamProtocol(LowLevelUpstreamProtocol):
         # ignore
 
 
-class HiddenFactory(ClientFactory):
+class HiddenFactory(LowLevelUpstreamFactory):
     protocol = HiddenUpstreamProtocol
 
 
