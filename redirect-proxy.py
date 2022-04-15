@@ -9,7 +9,8 @@ from enum import Enum
 
 
 class ProxyMode(Enum):
-    pass_through = 'pass-through'
+    pass_through_dedicated = 'pass-through-dedicated'
+    pass_through_by_domain = 'pass-through-by-domain'
     hidden = 'hidden'
 
     def __str__(self):
@@ -186,14 +187,16 @@ def main(argv):
     parser.add_argument("-p", "--listen-port1", default=25566,
                         type=int, help="port to listen on")
     parser.add_argument("-b", "--pass-through-host",
-                        default="mh-prd.minehut.com", help="address to connect to")
+                        default="minehut.com", help="address to connect to in dedicated mode")
     parser.add_argument("-q", "--pass-through-port", default=25565,
-                        type=int, help="port to connect to")
+                        type=int, help="port to connect to in dedicated mode")
     parser.add_argument("-c", "--hidden-connect-host",
-                        default="127.0.0.1", help="another address to connect to")
+                        default="127.0.0.1", help="another address to connect to in hidden mode")
     parser.add_argument("-r", "--hidden-connect-port", default=25565,
-                        type=int, help="another port to connect to")
-    parser.add_argument("-m", "--mode", default=ProxyMode.pass_through,
+                        type=int, help="another port to connect to in hidden mode")
+    parser.add_argument("-d", "--domain", default="",
+                        help="the domain the proxy is running on")
+    parser.add_argument("-m", "--mode", default=ProxyMode.pass_through_dedicated,
                         type=ProxyMode, choices=list(ProxyMode), help="proxy mode")
     parser.add_argument(
         '--sync', help="sync motd with pass through host (default)", action='store_true')
@@ -201,14 +204,13 @@ def main(argv):
     parser.set_defaults(sync=True)
     args = parser.parse_args(argv)
 
+    if args.mode == ProxyMode.pass_through_by_domain and args.domain == "":
+        parser.error("--domain is required for pass-through-by-domain mode")
+        return
+
     # Create factory
     factory = MyDownstreamFactory()
-    factory.connect_host = args.pass_through_host
-    factory.connect_port = args.pass_through_port
-    factory.hidden_connect_host = args.hidden_connect_host
-    factory.hidden_connect_port = args.hidden_connect_port
-    factory.mode = args.mode
-    factory.sync = args.no_sync
+    factory.args = args
 
     # Listen
     factory.listen(args.listen_host1, args.listen_port1)
