@@ -223,23 +223,23 @@ class MyDownstream(ServerProtocol):
         buff.restore()
         super().packet_handshake(buff)
 
-        if self.factory.args.mode != ProxyMode.hidden:
-            if self.factory.args.mode == ProxyMode.pass_through_by_domain:
-                try:
-                    self.upstream_host, self.upstream_port = connect_addr_to_upstream_addr(connect_host, server_domain)
-                except:
-                    self.close()
-                    return
+        # if self.factory.args.mode != ProxyMode.hidden:
+        if self.factory.args.mode == ProxyMode.pass_through_by_domain:
+            try:
+                self.upstream_host, self.upstream_port = connect_addr_to_upstream_addr(connect_host, server_domain)
+            except:
+                self.close()
+                return
 
-            if self.upstream_port == 25565:
-                try:
-                    self.upstream_dns_deffered = client \
-                        .lookupService('_minecraft._tcp.' + self.upstream_host, [10]) \
-                        .addCallback(self.dns_result_set_connect_host) \
-                        .addErrback(self.dns_result_set_connect_host)
-                except:
-                    self.close()
-                    return
+        if self.upstream_port == 25565:
+            try:
+                self.upstream_dns_deffered = client \
+                    .lookupService('_minecraft._tcp.' + self.upstream_host, [10]) \
+                    .addCallback(self.dns_result_set_connect_host) \
+                    .addErrback(self.dns_result_set_connect_host)
+            except:
+                self.close()
+                return
 
     def packet_login_start(self, buff):
         if self.login_expecting != 0:
@@ -260,7 +260,7 @@ class MyDownstream(ServerProtocol):
         self.hidden_connect_stream.send_packet("login_encryption_response", buff.read())
 
     def packet_status_request(self, buff):
-        if self.factory.args.sync:
+        if self.factory.args.no_sync:
             if self.upstream_dns_deffered != None:
                 self.upstream_dns_deffered.addCallback(self.motd_upstream_connect)
             else:
